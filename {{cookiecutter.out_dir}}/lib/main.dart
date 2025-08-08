@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/services.dart'; // <-- Импорт
 
 import 'package:flet/flet.dart';
 import 'package:flutter/foundation.dart';
@@ -11,45 +12,21 @@ import 'package:path_provider/path_provider.dart' as path_provider;
 import 'package:serious_python/serious_python.dart';
 import 'package:url_strategy/url_strategy.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:flutter_native_splash/flutter_native_splash.dart';
 
 import "python.dart";
-
-/*
-{% set show_boot_screen = get_pyproject("tool.flet." ~ cookiecutter.options.config_platform ~ ".app.boot_screen.show")
-                        or get_pyproject("tool.flet.app.boot_screen.show")
-                        or False %}
-{% set boot_screen_message = get_pyproject("tool.flet." ~ cookiecutter.options.config_platform ~ ".app.boot_screen.message")
-                        or get_pyproject("tool.flet.app.boot_screen.message") %}
-
-{% set show_startup_screen = get_pyproject("tool.flet." ~ cookiecutter.options.config_platform ~ ".app.startup_screen.show")
-                        or get_pyproject("tool.flet.app.startup_screen.show")
-                        or False %}
-{% set startup_screen_message = get_pyproject("tool.flet." ~ cookiecutter.options.config_platform ~ ".app.startup_screen.message")
-                        or get_pyproject("tool.flet.app.startup_screen.message") %}
-
-show_boot_screen: {{ show_boot_screen }}
-boot_screen_message: {{ boot_screen_message }}
-show_startup_screen: {{ show_startup_screen }}
-startup_screen_message: {{ startup_screen_message }}
-*/
-
-{% for dep in cookiecutter.flutter.dependencies %}
-import 'package:{{ dep }}/{{ dep }}.dart' as {{ dep }};
-{% endfor %}
+import 'app_ready_signal.dart' as app_ready_signal;
+import 'package:flet_cacheimg/flet_cacheimg.dart' as flet_cacheimg;
 
 const bool isProduction = bool.fromEnvironment('dart.vm.product');
 
 const assetPath = "app/app.zip";
-const pythonModuleName = "{{ cookiecutter.python_module_name }}";
-final showAppBootScreen = bool.tryParse("{{ show_boot_screen }}".toLowerCase()) ?? false;
-const appBootScreenMessage = '{{ boot_screen_message | default("Preparing the app for its first launch…", true) }}';
-final showAppStartupScreen = bool.tryParse("{{ show_startup_screen }}".toLowerCase()) ?? false;
-const appStartupScreenMessage = '{{ startup_screen_message | default("Getting things ready…", true) }}';
+const pythonModuleName = "main";
+const appBootScreenMessage = 'Загрузка';
 
 List<CreateControlFactory> createControlFactories = [
-{% for dep in cookiecutter.flutter.dependencies %}
-{{ dep }}.createControl,
-{% endfor %}
+  app_ready_signal.createControl,
+  flet_cacheimg.createControl,
 ];
 
 String outLogFilename = "";
@@ -62,77 +39,195 @@ String appDir = "";
 Map<String, String> environmentVariables = {};
 
 void main(List<String> args) async {
-  _args = List<String>.from(args);
+  WidgetsFlutterBinding.ensureInitialized();
+  FlutterNativeSplash.preserve(
+      widgetsBinding: WidgetsFlutterBinding.ensureInitialized());
 
-  runApp(FutureBuilder(
-      future: prepareApp(),
-      builder: (BuildContext context, AsyncSnapshot snapshot) {
-        if (snapshot.hasData) {
-          // OK - start Python program
-          return kIsWeb || (isDesktopPlatform() && _args.isNotEmpty)
-              ? FletApp(
-                  pageUrl: pageUrl,
-                  assetsDir: assetsDir,
-                  showAppStartupScreen: showAppStartupScreen,
-                  appStartupScreenMessage: appStartupScreenMessage,
-                  createControlFactories: createControlFactories)
-              : FutureBuilder(
-                  future: runPythonApp(args),
-                  builder:
-                      (BuildContext context, AsyncSnapshot<String?> snapshot) {
-                    if (snapshot.hasData || snapshot.hasError) {
-                      // error or premature finish
-                      return MaterialApp(
-                        home: ErrorScreen(
-                            title: "Error running app",
-                            text: snapshot.data ?? snapshot.error.toString()),
-                      );
-                    } else {
-                      // no result of error
-                      return FletApp(
-                          pageUrl: pageUrl,
-                          assetsDir: assetsDir,
-                          showAppStartupScreen: showAppStartupScreen,
-                          appStartupScreenMessage: appStartupScreenMessage,
-                          createControlFactories: createControlFactories);
-                    }
-                  });
-        } else if (snapshot.hasError) {
-          // error
-          return MaterialApp(
-              home: ErrorScreen(
-                  title: "Error starting app",
-                  text: snapshot.error.toString()));
-        } else {
-          // loading
-          return MaterialApp(home: showAppBootScreen ? const BootScreen() : const BlankScreen());
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.leanBack);
+
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    systemNavigationBarColor: Colors.transparent,
+    statusBarColor: Colors.transparent,
+    // statusBarIconBrightness: Brightness.light,
+    // systemNavigationBarIconBrightness: Brightness.light,
+  ));
+
+  _args = List<String>.from(args);
+  await prepareApp();
+
+  FlutterNativeSplash.remove();
+
+  runApp(const FletAppLoader());
+}
+
+// 🔥 ВОССТАНОВЛЕННЫЙ КЛАСС, КОТОРЫЙ ВЫЗЫВАЛ ОШИБКУ
+class FletAppLoader extends StatefulWidget {
+  const FletAppLoader({super.key});
+
+  @override
+  State<FletAppLoader> createState() => _FletAppLoaderState();
+}
+
+class _FletAppLoaderState extends State<FletAppLoader> {
+  static const _startupTimeout = Duration(seconds: 5);
+  static const _animationDuration = Duration(milliseconds: 500); // Длительность анимации
+
+  bool _isPythonServerReady = false;
+  bool _isFletAppReady = false;
+  String? _startupError;
+  Timer? _timeoutTimer;
+
+  @override
+  void initState() {
+    super.initState();
+
+    // Запускаем таймер на случай, если что-то пойдет не так
+    _timeoutTimer = Timer(_startupTimeout, () {
+      if (mounted && !_isFletAppReady) {
+        _hideBootScreenAndRestoreUI();
+      }
+    });
+
+    // Ждем сигнала от Flet, что UI готов
+    app_ready_signal.fletAppReadyCompleter.future.then((_) {
+      debugPrint("AppReadySignal received: UI is fully ready.");
+      if (mounted) {
+        _hideBootScreenAndRestoreUI();
+      }
+    });
+
+    // Стандартная логика запуска Python
+    if (!kIsWeb && !(_args.isNotEmpty && isDesktopPlatform())) {
+      runPythonApp(_args).then((error) {
+        if (error != null) {
+          debugPrint("Python app exited with error: $error");
+          if (mounted && !_isFletAppReady) {
+            _timeoutTimer?.cancel();
+            setState(() {
+              _startupError = error;
+            });
+          }
         }
-      }));
+      });
+      _probeForPythonServer();
+    } else {
+      _isPythonServerReady = true;
+    }
+  }
+
+  // 🔥 НОВЫЙ МЕТОД ДЛЯ УПРАВЛЕНИЯ ПЕРЕХОДОМ
+  void _hideBootScreenAndRestoreUI() {
+    _timeoutTimer?.cancel(); // Отменяем общий таймаут
+
+    if (!mounted) return;
+
+    // Шаг 1: Меняем состояние, чтобы запустить анимацию скрытия BootScreen
+    setState(() {
+      _isFletAppReady = true;
+    });
+
+    // Шаг 2: Через 500 мс (когда анимация завершится) возвращаем системный UI
+    Future.delayed(_animationDuration, () {
+      SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    });
+  }
+
+  Future<void> _probeForPythonServer() async {
+    // ... (код без изменений)
+    debugPrint("Starting Python server probe...");
+    const probeTimeout = Duration(seconds: 15);
+    final stopwatch = Stopwatch()..start();
+
+    while (stopwatch.elapsed < probeTimeout) {
+      if (!mounted) return;
+
+      try {
+        final udsFile = File(pageUrl);
+        if (await udsFile.exists()) {
+          debugPrint("✅ Python server socket found! Proceeding to connect FletApp.");
+          if (mounted) {
+            setState(() {
+              _isPythonServerReady = true;
+            });
+          }
+          return;
+        }
+      } catch (e) {
+        debugPrint("Probe error: $e");
+      }
+
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    debugPrint("Probe timed out. Python server socket did not appear in time.");
+  }
+
+
+  @override
+  void dispose() {
+    _timeoutTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (kIsWeb || (_args.isNotEmpty && isDesktopPlatform())) {
+      _timeoutTimer?.cancel();
+      return FletApp(
+        pageUrl: pageUrl,
+        assetsDir: assetsDir,
+        createControlFactories: createControlFactories,
+      );
+    }
+
+    if (_startupError != null) {
+      return MaterialApp(
+        debugShowCheckedModeBanner: false,
+        home: ErrorScreen(
+            title: "Ошибка при запуске приложения", text: _startupError!),
+      );
+    }
+
+    if (!_isPythonServerReady) {
+      return const BootScreen();
+    } else {
+      return Stack(
+        children: [
+          FletApp(
+            pageUrl: pageUrl,
+            assetsDir: assetsDir,
+            createControlFactories: createControlFactories,
+          ),
+          AnimatedSwitcher(
+            duration: _animationDuration, // Используем константу
+            transitionBuilder: (Widget child, Animation<double> animation) {
+              return FadeTransition(opacity: animation, child: child);
+            },
+            child: !_isFletAppReady
+                ? const BootScreen(key: ValueKey('BootScreen'))
+                : const SizedBox.shrink(key: ValueKey('Empty')),
+          ),
+        ],
+      );
+    }
+  }
 }
 
 Future prepareApp() async {
-  if (!_args.contains("--debug")) {
-    // ignore: avoid_returning_null_for_void
-    debugPrint = (String? message, {int? wrapWidth}) => null;
-  } else {
-    _args.remove("--debug");
-  }
-
+  // Логирование теперь включено по умолчанию для отладки
   await setupDesktop();
 
-  {% for dep in cookiecutter.flutter.dependencies %}
-  {{ dep }}.ensureInitialized();
-  {% endfor %}
+  flet_cacheimg.ensureInitialized();
+  appDir = await extractAssetZip(assetPath, checkHash: true);
+  await Future.delayed(const Duration(seconds: 2));
 
   if (kIsWeb) {
-    // web mode - connect via HTTP
     pageUrl = Uri.base.toString();
     var routeUrlStrategy = getFletRouteUrlStrategy();
     if (routeUrlStrategy == "path") {
       setPathUrlStrategy();
     }
   } else if (_args.isNotEmpty && isDesktopPlatform()) {
-    // developer mode
     debugPrint("Flet app is running in Developer mode");
     pageUrl = _args[0];
     if (_args.length > 1) {
@@ -146,16 +241,10 @@ Future prepareApp() async {
       debugPrint("Args contain a path assets directory: $assetsDir}");
     }
   } else {
-    // production mode
-    // extract app from asset
-    appDir = await extractAssetZip(assetPath, checkHash: true);
 
-    // set current directory to app path
     Directory.current = appDir;
-
     assetsDir = path.join(appDir, "assets");
 
-    // configure apps DATA and TEMP directories
     WidgetsFlutterBinding.ensureInitialized();
 
     var appTempPath = (await path_provider.getApplicationCacheDirectory()).path;
@@ -164,7 +253,6 @@ Future prepareApp() async {
 
     if (defaultTargetPlatform != TargetPlatform.iOS &&
         defaultTargetPlatform != TargetPlatform.android) {
-      // append app name to the path and create dir
       PackageInfo packageInfo = await PackageInfo.fromPlatform();
       appDataPath = path.join(appDataPath, "flet", packageInfo.packageName);
       if (!await Directory(appDataPath).exists()) {
@@ -174,25 +262,20 @@ Future prepareApp() async {
 
     environmentVariables["FLET_APP_STORAGE_DATA"] = appDataPath;
     environmentVariables["FLET_APP_STORAGE_TEMP"] = appTempPath;
-
     outLogFilename = path.join(appTempPath, "console.log");
     environmentVariables["FLET_APP_CONSOLE"] = outLogFilename;
-
     environmentVariables["FLET_PLATFORM"] =
         defaultTargetPlatform.name.toLowerCase();
 
     if (defaultTargetPlatform == TargetPlatform.windows) {
-      // use TCP on Windows
       var tcpPort = await getUnusedPort();
       pageUrl = "tcp://localhost:$tcpPort";
       environmentVariables["FLET_SERVER_PORT"] = tcpPort.toString();
     } else {
-      // use UDS on other platforms
       pageUrl = "flet_$pid.sock";
       environmentVariables["FLET_SERVER_UDS_PATH"] = pageUrl;
     }
   }
-
   return "";
 }
 
@@ -205,7 +288,6 @@ Future<String?> runPythonApp(List<String> args) async {
       .replaceAll('{argv}', argv);
 
   var completer = Completer<String>();
-
   ServerSocket outSocketServer;
   String socketAddr = "";
   StringBuffer pythonOut = StringBuffer();
@@ -230,9 +312,7 @@ Future<String?> runPythonApp(List<String> args) async {
 
   void closeOutServer() async {
     outSocketServer.close();
-
     int exitCode = int.tryParse(pythonOut.toString().trim()) ?? 0;
-
     if (exitCode == errorExitCode) {
       var out = "";
       if (await File(outLogFilename).exists()) {
@@ -243,6 +323,11 @@ Future<String?> runPythonApp(List<String> args) async {
       exit(exitCode);
     }
   }
+
+  SeriousPython.runProgram(path.join(appDir, "$pythonModuleName.pyc"),
+      script: script, environmentVariables: environmentVariables);
+
+  await Future.delayed(const Duration(milliseconds: 300));
 
   outSocketServer.listen((client) {
     debugPrint(
@@ -259,18 +344,14 @@ Future<String?> runPythonApp(List<String> args) async {
     });
   });
 
-  // run python async
-  SeriousPython.runProgram(path.join(appDir, "$pythonModuleName.pyc"),
-      script: script, environmentVariables: environmentVariables);
 
-  // wait for client connection to close
+
   return completer.future;
 }
 
 class ErrorScreen extends StatelessWidget {
   final String title;
   final String text;
-
   const ErrorScreen({super.key, required this.title, required this.text});
 
   @override
@@ -316,27 +397,57 @@ class ErrorScreen extends StatelessWidget {
   }
 }
 
+// 🔥 ИЗМЕНЕННЫЙ WIDGET
 class BootScreen extends StatelessWidget {
-  const BootScreen({
-    super.key,
-  });
+  const BootScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
+    return Container(
+      color: const Color(0xFF000000),
+      // 🔥 ИЗМЕНЕНИЕ: Добавляем SafeArea, чтобы избежать перекрытия
+      // контента системными панелями Android (например, нижней панелью навигации).
+      child: SafeArea(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const SizedBox(
-              width: 30,
-              height: 30,
-              child: CircularProgressIndicator(strokeWidth: 3),
+            const Spacer(),
+            const Center(
+              child: Image(
+                image: AssetImage('images/icon.png'),
+              ),
             ),
-            const SizedBox(
-              height: 10,
+            const Spacer(),
+            Padding(
+              // Этот Padding теперь будет применяться внутри "безопасной зоны",
+              // что поднимает элементы и решает проблему.
+              padding: const EdgeInsets.all(32.0),
+              child: Column(
+                children: [
+                  const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 3,
+                      color: Colors.white,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Directionality(
+                    textDirection: TextDirection.ltr,
+                    child: Text(
+                      appBootScreenMessage,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                        decoration: TextDecoration.none,
+                        fontFamily: '.SF UI Text',
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            Text(appBootScreenMessage, style: Theme.of(context).textTheme.bodySmall,)
           ],
         ),
       ),
@@ -344,11 +455,11 @@ class BootScreen extends StatelessWidget {
   }
 }
 
+
 class BlankScreen extends StatelessWidget {
   const BlankScreen({
     super.key,
   });
-
   @override
   Widget build(BuildContext context) {
     return const Scaffold(
