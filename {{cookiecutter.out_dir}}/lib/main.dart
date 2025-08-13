@@ -5,7 +5,6 @@ import 'package:flutter/services.dart'; // <-- Импорт
 import 'package:flet/flet.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart' as path_provider;
@@ -171,43 +170,61 @@ class _FletAppLoaderState extends State<FletAppLoader> {
 
   @override
   Widget build(BuildContext context) {
+    // Для веб-версии и режима разработки оставляем как есть
     if (kIsWeb || (_args.isNotEmpty && isDesktopPlatform())) {
       _timeoutTimer?.cancel();
-      return FletApp(
-        pageUrl: pageUrl,
-        assetsDir: assetsDir,
-        createControlFactories: createControlFactories,
+      // 🔥 ИЗМЕНЕНИЕ: Оборачиваем FletApp для ограничения масштаба шрифта
+      return MediaQuery.withClampedTextScaling(
+        minScaleFactor: 0.8,
+        maxScaleFactor: 1.1,
+        child: FletApp(
+          pageUrl: pageUrl,
+          assetsDir: assetsDir,
+          createControlFactories: createControlFactories,
+        ),
       );
     }
 
+    // Экран ошибки также оборачиваем, чтобы он выглядел консистентно
     if (_startupError != null) {
-      return MaterialApp(
-        debugShowCheckedModeBanner: false,
-        home: ErrorScreen(
-            title: "Ошибка при запуске приложения", text: _startupError!),
+      // 🔥 ИЗМЕНЕНИЕ: Ограничиваем масштаб шрифта и для экрана ошибки
+      return MediaQuery.withClampedTextScaling(
+        minScaleFactor: 0.8,
+        maxScaleFactor: 1.1,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          home: ErrorScreen(
+              title: "Ошибка при запуске приложения", text: _startupError!),
+        ),
       );
     }
 
+    // Основная логика для мобильных платформ
     if (!_isPythonServerReady) {
       return const BootScreen();
     } else {
-      return Stack(
-        children: [
-          FletApp(
-            pageUrl: pageUrl,
-            assetsDir: assetsDir,
-            createControlFactories: createControlFactories,
-          ),
-          AnimatedSwitcher(
-            duration: _animationDuration, // Используем константу
-            transitionBuilder: (Widget child, Animation<double> animation) {
-              return FadeTransition(opacity: animation, child: child);
-            },
-            child: !_isFletAppReady
-                ? const BootScreen(key: ValueKey('BootScreen'))
-                : const SizedBox.shrink(key: ValueKey('Empty')),
-          ),
-        ],
+      // 🔥 ИЗМЕНЕНИЕ: Оборачиваем основной Stack для ограничения масштаба шрифта
+      return MediaQuery.withClampedTextScaling(
+        minScaleFactor: 0.8,
+        maxScaleFactor: 1.1,
+        child: Stack(
+          children: [
+            FletApp(
+              pageUrl: pageUrl,
+              assetsDir: assetsDir,
+              createControlFactories: createControlFactories,
+            ),
+            AnimatedSwitcher(
+              duration: _animationDuration, // Используем константу
+              transitionBuilder: (Widget child, Animation<double> animation) {
+                return FadeTransition(opacity: animation, child: child);
+              },
+              child: !_isFletAppReady
+                  ? const BootScreen(key: ValueKey('BootScreen'))
+                  : const SizedBox.shrink(key: ValueKey('Empty')),
+            ),
+          ],
+        ),
       );
     }
   }
