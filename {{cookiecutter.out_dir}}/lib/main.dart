@@ -16,6 +16,7 @@ import 'package:flutter_native_splash/flutter_native_splash.dart';
 import "python.dart";
 import 'app_ready_signal.dart' as app_ready_signal;
 import 'package:flet_cacheimg/flet_cacheimg.dart' as flet_cacheimg;
+import 'safe_cupertino_navbar.dart' as safe_cupertino_navbar;
 
 const bool isProduction = bool.fromEnvironment('dart.vm.product');
 
@@ -24,6 +25,7 @@ const pythonModuleName = "main";
 const appBootScreenMessage = 'Загрузка';
 
 List<CreateControlFactory> createControlFactories = [
+  safe_cupertino_navbar.createSafeCupertinoNavBarFactory,
   app_ready_signal.createControl,
   flet_cacheimg.createControl,
 ];
