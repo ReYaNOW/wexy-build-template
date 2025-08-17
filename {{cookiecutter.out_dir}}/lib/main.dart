@@ -44,7 +44,7 @@ void main(List<String> args) async {
   FlutterNativeSplash.preserve(
       widgetsBinding: WidgetsFlutterBinding.ensureInitialized());
 
-  SystemChrome.setEnabledSystemUIMode(SystemUiMode.leanBack);
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     systemNavigationBarColor: Colors.transparent,
