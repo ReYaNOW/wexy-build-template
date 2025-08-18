@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:flutter/services.dart'; // <-- Импорт
+import 'package:flutter/services.dart';
 
 import 'package:flet/flet.dart';
 import 'package:flutter/foundation.dart';
@@ -49,8 +49,6 @@ void main(List<String> args) async {
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     systemNavigationBarColor: Colors.transparent,
     statusBarColor: Colors.transparent,
-    // statusBarIconBrightness: Brightness.light,
-    // systemNavigationBarIconBrightness: Brightness.light,
   ));
 
   _args = List<String>.from(args);
@@ -61,7 +59,6 @@ void main(List<String> args) async {
   runApp(const FletAppLoader());
 }
 
-// 🔥 ВОССТАНОВЛЕННЫЙ КЛАСС, КОТОРЫЙ ВЫЗЫВАЛ ОШИБКУ
 class FletAppLoader extends StatefulWidget {
   const FletAppLoader({super.key});
 
@@ -69,9 +66,10 @@ class FletAppLoader extends StatefulWidget {
   State<FletAppLoader> createState() => _FletAppLoaderState();
 }
 
-class _FletAppLoaderState extends State<FletAppLoader> {
+// 🔥 ДОБАВЛЯЕМ 'WidgetsBindingObserver' ДЛЯ ОТСЛЕЖИВАНИЯ ЖИЗНЕННОГО ЦИКЛА
+class _FletAppLoaderState extends State<FletAppLoader> with WidgetsBindingObserver {
   static const _startupTimeout = Duration(seconds: 5);
-  static const _animationDuration = Duration(milliseconds: 500); // Длительность анимации
+  static const _animationDuration = Duration(milliseconds: 500);
 
   bool _isPythonServerReady = false;
   bool _isFletAppReady = false;
@@ -82,7 +80,9 @@ class _FletAppLoaderState extends State<FletAppLoader> {
   void initState() {
     super.initState();
 
-    // Запускаем таймер на случай, если что-то пойдет не так
+    // 🔥 РЕГИСТРИРУЕМ ОБРАБОТЧИК ЖИЗНЕННОГО ЦИКЛА
+    WidgetsBinding.instance.addObserver(this);
+
     _timeoutTimer = Timer(_startupTimeout, () {
       if (mounted && !_isFletAppReady) {
         _hideBootScreenAndRestoreUI();
@@ -116,9 +116,28 @@ class _FletAppLoaderState extends State<FletAppLoader> {
     }
   }
 
-  // 🔥 НОВЫЙ МЕТОД ДЛЯ УПРАВЛЕНИЯ ПЕРЕХОДОМ
+  // 🔥 ГЛАВНЫЙ ФИКС ЗДЕСЬ
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // Нас интересует только состояние 'detached' на Android.
+    // Это состояние наступает, когда приложение закрывается (например, кнопкой "назад").
+    if (defaultTargetPlatform == TargetPlatform.android && state == AppLifecycleState.detached) {
+      // Если Flet UI еще не готов, это означает, что Python-сервер
+      // может находиться в промежуточном состоянии, и его обработчик
+      // os._exit(1) еще не зарегистрирован.
+      // Чтобы предотвратить сбой при следующем запуске, мы принудительно
+      // завершаем весь процесс, имитируя поведение Python-фикса.
+      if (!_isFletAppReady) {
+        debugPrint(
+            "App detached during boot. Force exiting to prevent crash on next launch.");
+        exit(0); // Принудительно убиваем процесс.
+      }
+    }
+  }
+
   void _hideBootScreenAndRestoreUI() {
-    _timeoutTimer?.cancel(); // Отменяем общий таймаут
+    _timeoutTimer?.cancel();
 
     if (!mounted) return;
 
@@ -134,7 +153,6 @@ class _FletAppLoaderState extends State<FletAppLoader> {
   }
 
   Future<void> _probeForPythonServer() async {
-    // ... (код без изменений)
     debugPrint("Starting Python server probe...");
     const probeTimeout = Duration(seconds: 15);
     final stopwatch = Stopwatch()..start();
@@ -145,7 +163,8 @@ class _FletAppLoaderState extends State<FletAppLoader> {
       try {
         final udsFile = File(pageUrl);
         if (await udsFile.exists()) {
-          debugPrint("✅ Python server socket found! Proceeding to connect FletApp.");
+          debugPrint(
+              "✅ Python server socket found! Proceeding to connect FletApp.");
           if (mounted) {
             setState(() {
               _isPythonServerReady = true;
@@ -160,22 +179,22 @@ class _FletAppLoaderState extends State<FletAppLoader> {
       await Future.delayed(const Duration(milliseconds: 300));
     }
 
-    debugPrint("Probe timed out. Python server socket did not appear in time.");
+    debugPrint(
+        "Probe timed out. Python server socket did not appear in time.");
   }
-
 
   @override
   void dispose() {
+    // 🔥 ОБЯЗАТЕЛЬНО УДАЛЯЕМ ОБРАБОТЧИК ПРИ УНИЧТОЖЕНИИ ВИДЖЕТА
+    WidgetsBinding.instance.removeObserver(this);
     _timeoutTimer?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // Для веб-версии и режима разработки оставляем как есть
     if (kIsWeb || (_args.isNotEmpty && isDesktopPlatform())) {
       _timeoutTimer?.cancel();
-      // 🔥 ИЗМЕНЕНИЕ: Оборачиваем FletApp для ограничения масштаба шрифта
       return MediaQuery.withClampedTextScaling(
         minScaleFactor: 0.8,
         maxScaleFactor: 1.1,
@@ -187,9 +206,7 @@ class _FletAppLoaderState extends State<FletAppLoader> {
       );
     }
 
-    // Экран ошибки также оборачиваем, чтобы он выглядел консистентно
     if (_startupError != null) {
-      // 🔥 ИЗМЕНЕНИЕ: Ограничиваем масштаб шрифта и для экрана ошибки
       return MediaQuery.withClampedTextScaling(
         minScaleFactor: 0.8,
         maxScaleFactor: 1.1,
@@ -201,11 +218,9 @@ class _FletAppLoaderState extends State<FletAppLoader> {
       );
     }
 
-    // Основная логика для мобильных платформ
     if (!_isPythonServerReady) {
       return const BootScreen();
     } else {
-      // 🔥 ИЗМЕНЕНИЕ: Оборачиваем основной Stack для ограничения масштаба шрифта
       return MediaQuery.withClampedTextScaling(
         minScaleFactor: 0.8,
         maxScaleFactor: 1.1,
@@ -217,7 +232,7 @@ class _FletAppLoaderState extends State<FletAppLoader> {
               createControlFactories: createControlFactories,
             ),
             AnimatedSwitcher(
-              duration: _animationDuration, // Используем константу
+              duration: _animationDuration,
               transitionBuilder: (Widget child, Animation<double> animation) {
                 return FadeTransition(opacity: animation, child: child);
               },
@@ -416,7 +431,6 @@ class ErrorScreen extends StatelessWidget {
   }
 }
 
-// 🔥 ИЗМЕНЕННЫЙ WIDGET
 class BootScreen extends StatelessWidget {
   const BootScreen({super.key});
 
@@ -424,8 +438,6 @@ class BootScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       color: const Color(0xFF000000),
-      // 🔥 ИЗМЕНЕНИЕ: Добавляем SafeArea, чтобы избежать перекрытия
-      // контента системными панелями Android (например, нижней панелью навигации).
       child: SafeArea(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -438,8 +450,6 @@ class BootScreen extends StatelessWidget {
             ),
             const Spacer(),
             Padding(
-              // Этот Padding теперь будет применяться внутри "безопасной зоны",
-              // что поднимает элементы и решает проблему.
               padding: const EdgeInsets.all(32.0),
               child: Column(
                 children: [
